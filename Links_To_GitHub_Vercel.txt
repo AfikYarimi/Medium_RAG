@@ -1,0 +1,2 @@
+https://medium-rag-liard.vercel.app
+https://github.com/AfikYarimi/Medium_RAG
