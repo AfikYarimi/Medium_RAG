@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Dataset – too large for git
+medium-english-50mb.csv
+
+# Misc
+.DS_Store
+*.log
