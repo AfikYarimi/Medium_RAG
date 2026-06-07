@@ -1,22 +1,28 @@
 from __future__ import annotations
 
+import json
 import os
-from typing import Optional
+import sys
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 
-# Remove empty OPENAI_BASE_URL before the SDK is imported so it doesn't
-# try to use "" as a base URL (the SDK reads this env var on import).
+# Load .env.local when running locally (no-op on Vercel where env vars are injected)
+_env = Path(__file__).parent.parent / ".env.local"
+if _env.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_env)
+
+# Remove empty OPENAI_BASE_URL so the SDK doesn't use "" as a base URL
 if not os.environ.get("OPENAI_BASE_URL", "").strip():
     os.environ.pop("OPENAI_BASE_URL", None)
 
-from flask import Flask, request, jsonify
 from openai import OpenAI
 from pinecone import Pinecone
 
-# ── RAG hyperparameters ───────────────────────────────────────────────────────
-CHUNK_SIZE = 512        # approximate tokens (≈384 words at 0.75 words/token)
-OVERLAP_RATIO = 0.2     # 20% overlap
+# ── RAG config ────────────────────────────────────────────────────────────────
+CHUNK_SIZE = 512
+OVERLAP_RATIO = 0.2
 TOP_K = 10
-
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-5-mini")
 INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "medium-articles")
@@ -32,16 +38,12 @@ SYSTEM_PROMPT = (
     "the relevant article passage or metadata when helpful."
 )
 
-# ── Flask app ─────────────────────────────────────────────────────────────────
-app = Flask(__name__)
-
-# Lazy singletons (serverless functions are stateless, but this avoids
-# re-constructing clients on every call within the same warm instance)
-_openai_client: Optional[OpenAI] = None
+# ── Lazy singletons ───────────────────────────────────────────────────────────
+_openai_client: OpenAI | None = None
 _pinecone_index = None
 
 
-def get_openai() -> OpenAI:
+def _openai() -> OpenAI:
     global _openai_client
     if _openai_client is None:
         kwargs: dict = {"api_key": os.environ["OPENAI_API_KEY"]}
@@ -52,7 +54,7 @@ def get_openai() -> OpenAI:
     return _openai_client
 
 
-def get_index():
+def _index():
     global _pinecone_index
     if _pinecone_index is None:
         pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
@@ -63,17 +65,13 @@ def get_index():
 # ── RAG pipeline ──────────────────────────────────────────────────────────────
 
 def run_rag(question: str) -> dict:
-    client = get_openai()
+    client = _openai()
 
-    # 1. Embed the question
     embed_res = client.embeddings.create(model=EMBEDDING_MODEL, input=question)
     query_vector = embed_res.data[0].embedding
 
-    # 2. Retrieve top-k chunks from Pinecone
-    index = get_index()
-    query_res = index.query(vector=query_vector, top_k=TOP_K, include_metadata=True)
+    query_res = _index().query(vector=query_vector, top_k=TOP_K, include_metadata=True)
 
-    # 3. Format context chunks
     context = []
     for match in query_res.matches or []:
         meta = match.metadata or {}
@@ -84,14 +82,12 @@ def run_rag(question: str) -> dict:
             "score": float(match.score or 0.0),
         })
 
-    # 4. Build augmented prompt
     context_text = "\n\n---\n\n".join(
         f'[{i + 1}] Title: "{c["title"]}" | Article ID: {c["article_id"]}\n{c["chunk"]}'
         for i, c in enumerate(context)
     )
     user_prompt = f"Context from Medium articles:\n\n{context_text}\n\n---\n\nQuestion: {question}"
 
-    # 5. Generate answer
     chat_res = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=[
@@ -115,43 +111,33 @@ def run_rag(question: str) -> dict:
     }
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── Vercel handler ────────────────────────────────────────────────────────────
 
-@app.route("/api/prompt", methods=["POST"])
-def prompt_endpoint():
-    body = request.get_json(force=True, silent=True) or {}
-    question = str(body.get("question", "")).strip()
-    if not question:
-        return jsonify({"error": 'Missing or empty "question" field.'}), 400
-    try:
-        result = run_rag(question)
-        return jsonify(result)
-    except Exception as exc:
-        app.logger.error("RAG error: %s", exc, exc_info=True)
-        return jsonify({"error": "Internal server error."}), 500
+class handler(BaseHTTPRequestHandler):
 
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            question = str(body.get("question", "")).strip()
 
-@app.route("/api/stats", methods=["GET"])
-def stats_endpoint():
-    return jsonify({
-        "chunk_size": CHUNK_SIZE,
-        "overlap_ratio": OVERLAP_RATIO,
-        "top_k": TOP_K,
-    })
+            if not question:
+                self._respond(400, {"error": 'Missing or empty "question" field.'})
+                return
 
+            result = run_rag(question)
+            self._respond(200, result)
 
-@app.route("/", methods=["GET"])
-def index():
-    return jsonify({
-        "description": "Medium Article RAG Assistant",
-        "endpoints": {
-            "POST /api/prompt": "Query the RAG system",
-            "GET /api/stats": "Get RAG hyperparameter configuration",
-        },
-    })
+        except Exception as exc:
+            self._respond(500, {"error": str(exc)})
 
+    def _respond(self, status: int, data: dict):
+        payload = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv(".env.local")
-    app.run(debug=True, port=5000)
+    def log_message(self, format, *args):
+        pass  # suppress default access logs
