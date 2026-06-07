@@ -35,7 +35,8 @@ INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "medium-articles")
 DIMENSIONS = 1536
 
 CHUNK_WORDS = 384        # ≈512 tokens at 0.75 words/token
-OVERLAP_WORDS = 77       # 20% of 384
+OVERLAP_RATIO = 0.25
+OVERLAP_WORDS = int(OVERLAP_RATIO * CHUNK_WORDS)       # 25% of 384 = 96 words
 STEP = CHUNK_WORDS - OVERLAP_WORDS
 
 EMBED_BATCH = 50         # texts per embedding API call

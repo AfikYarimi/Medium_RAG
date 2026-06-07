@@ -21,8 +21,8 @@ from pinecone import Pinecone
 
 # ── RAG config ────────────────────────────────────────────────────────────────
 CHUNK_SIZE = 512
-OVERLAP_RATIO = 0.2
-TOP_K = 10
+OVERLAP_RATIO = 0.25
+TOP_K = 20
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-5-mini")
 INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "medium-articles")

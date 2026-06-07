@@ -4,8 +4,8 @@ import json
 from http.server import BaseHTTPRequestHandler
 
 CHUNK_SIZE = 512
-OVERLAP_RATIO = 0.2
-TOP_K = 10
+OVERLAP_RATIO = 0.25
+TOP_K = 20
 
 
 class handler(BaseHTTPRequestHandler):
